@@ -1,104 +1,122 @@
-from PIL import Image
-from torch.utils.data import Dataset
-from pycocotools.coco import COCO
-import os
-from contextlib import redirect_stdout
-import torch
+import json
 import cv2
 import numpy as np
-from torchvision import transforms, models, datasets
+import torch
+from torch.utils.data import Dataset
 
-
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-def preprocess_image(img):
-    img = torch.tensor(img).permute(2,0,1)
-    return img.to(device).float()
-     
+# -------------------------------
+# CoCoDataSet: đọc file COCO JSON
+# -------------------------------
 
 class CoCoDataSet(Dataset):
-    
-    def __init__(self, path, annotations=None):
-        super().__init__()
+    def __init__(self, images_root, annotations):
+        self.images_root = images_root
 
-        self.path = os.path.expanduser(path)
-        with redirect_stdout(None):
-            self.coco = COCO(annotations)
-        self.ids = list(self.coco.imgs.keys())
-        if 'categories' in self.coco.dataset:
-            self.categories_inv = {k: i for i, k in enumerate(self.coco.getCatIds())}
+        with open(annotations, "r") as f:
+            coco = json.load(f)
 
+        self.images = coco["images"]
+        self.annotations = coco["annotations"]
+
+        # gom annotation theo image_id
+        ann_dict = {}
+        for ann in self.annotations:
+            img_id = ann["image_id"]
+            ann_dict.setdefault(img_id, []).append(ann)
+
+        # preload ảnh
+        self.imageData = []
+
+        for img in self.images:
+            img_id = img["id"]
+            filename = img["file_name"]
+
+            path = f"{self.images_root}/{filename}"
+            im = cv2.imread(path)
+
+            if im is None:
+                continue
+
+            im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
+
+            boxes = []
+            labels = []
+
+            # lấy bbox
+            if img_id in ann_dict:
+                for ann in ann_dict[img_id]:
+                    x, y, w, h = ann["bbox"]
+
+                    # bỏ box w/h <= 1
+                    if w <= 1 or h <= 1:
+                        continue
+
+                    boxes.append([x, y, w, h])
+                    labels.append(ann["category_id"])
+
+            if len(boxes) == 0:
+                continue
+
+            self.imageData.append({
+                "image": im,
+                "boxes": boxes,
+                "labels": labels,
+                "filename": filename,
+                "image_id": img_id,
+            })
 
     def __len__(self):
-        return len(self.ids)
-
-
+        return len(self.imageData)
 
     def __getitem__(self, index):
-        ' Get sample'
-
-        # Load image
-        id = self.ids[index]
-        
-        image = self.coco.loadImgs(id)[0]['file_name']
- 
-        im = cv2.imread('{}/{}'.format(self.path, image),1)[...,::-1]
-
-        boxes, categories = self._get_target(id)
-        
-
-        return im, boxes[0:4], categories, image, id
+        d = self.imageData[index]
+        return d["image"], d["boxes"], d["labels"], d["filename"], d["image_id"]
 
 
-    def _get_target(self, id):
-        'Get annotations for sample'
+# -------------------------------
+# Preprocessing
+# -------------------------------
 
-        ann_ids = self.coco.getAnnIds(imgIds=id)
-        annotations = self.coco.loadAnns(ann_ids)
+def preprocess(image_np):
+    img = image_np.astype(np.float32) / 255.0
+    return torch.tensor(img).permute(2, 0, 1)
 
-        boxes, categories = [], []
-        for ann in annotations:
-            final_bbox = ann['bbox']
+# Giữ tên hàm cũ để trainer import được
+def preprocess_image(image_np):
+    return preprocess(image_np)
 
-            assert len(ann['bbox']) == 4, "Bounding box for id %i does not contain four entries." % id
-            boxes.append(ann['bbox'])
-            cat = ann['category_id']
-            if 'categories' in self.coco.dataset:
-                cat = self.categories_inv[cat]
-            categories.append(cat)
 
-        return boxes , categories
+# -------------------------------
+# DamageDataset cho FasterRCNN
+# -------------------------------
 
 class DamageDataset(Dataset):
-    w, h = 224, 224
-    def __init__(self,path, fpaths, labels, boxes, image_ids,transforms=None):
-        self.fpaths = fpaths
-        self.labels = labels
-        self.boxes = boxes
-        self.image_ids = image_ids
-        self.path = os.path.expanduser(path)
-        
-    def __len__(self): return len(self.FPATHS)
-    def __getitem__(self, ix):
-       
-        image_id = self.image_ids[ix]
-        fpath = str(self.fpaths[ix])
-        img = Image.open('{}/{}'.format(self.path, fpath)).convert("RGB")
+    def __init__(self, coco_dataset):
+        self.coco_ds = coco_dataset
 
-        img = np.array(img)/255.0
+    def __len__(self):
+        return len(self.coco_ds)
 
-        boxes = torch.from_numpy(np.array(self.boxes[ix]))
+    def __getitem__(self, idx):
+        img_np, boxes, labels, filename, img_id = self.coco_ds[idx]
 
+        img = preprocess_image(img_np)
 
-        labels = self.labels[ix]
-        target = {}
-        target["boxes"] = torch.Tensor(boxes).float()
-        target["labels"] = torch.Tensor( labels).long()
-        img = preprocess_image(img)
+        # convert COCO bbox → XYXY
+        xyxy = []
+        for (x, y, w, h) in boxes:
+            xyxy.append([x, y, x + w, y + h])
+
+        boxes = torch.tensor(xyxy, dtype=torch.float32)
+        labels = torch.tensor(labels, dtype=torch.int64)
+
+        target = {
+            "boxes": boxes,
+            "labels": labels,
+            "image_id": torch.tensor([img_id]),
+        }
+
         return img, target
 
-    def __len__(self) -> int:
-        return len(self.fpaths)
-    
     def collate_fn(self, batch):
         return tuple(zip(*batch))

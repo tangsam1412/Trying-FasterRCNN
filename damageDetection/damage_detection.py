@@ -4,10 +4,10 @@ from damage_detection_trainer import DamageDetectionTrainer
 from inference import inference_model
 
 def main(train=False, infer=False, infer_source="", infer_dest=""):
-    train_coco = "dataset/train/train.json"
+    train_coco = "dataset/train/train_300_remap.json"
     train_images = "dataset/train/images"
 
-    val_coco = "dataset/val/val.json"
+    val_coco = "dataset/val/val_50_remap.json"
     val_images = "dataset/val/images"
 
     model_path = "trained_models/frcnn_damage.pt"
