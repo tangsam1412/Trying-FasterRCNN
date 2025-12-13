@@ -1,75 +1,149 @@
-import os
-import cv2
 import torch
+import cv2
+import os
+import numpy as np
 import torchvision
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 
-def load_model(model_path, num_classes=3, device="cuda"):
-    """Load trained FasterRCNN model"""
-    model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=False)
+
+# ==========================
+# CONFIG
+# ==========================
+
+# Dataset của bạn có 8 lớp + 1 background → num_classes = 9
+NUM_CLASSES = 9
+
+# Tên class theo train_300_remap.json
+CLASS_NAMES = {
+    1: "concave",
+    2: "axis",
+    3: "container",
+    4: "dentado",
+    5: "perforation",
+    6: "mildew",
+    7: "puncture",
+    8: "scratch",
+}
+
+
+# ==========================
+# LOAD MODEL
+# ==========================
+
+def load_model(model_path, num_classes=NUM_CLASSES):
+    print(f"Loading model from: {model_path}")
+
+    model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights=None)
+
     in_features = model.roi_heads.box_predictor.cls_score.in_features
+
     model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
 
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    state = torch.load(model_path, map_location="cpu")
+    model.load_state_dict(state)
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
     model.eval()
 
+    print(f"Model loaded. Device: {device}")
     return model
 
 
-def inference_model(infer_source, infer_dest, model_path, num_classes=3):
-    """Run inference on a folder of images."""
+# ==========================
+# PREPROCESS
+# ==========================
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+def preprocess(img):
+    img = img.astype(np.float32) / 255.0
+    return torch.tensor(img).permute(2, 0, 1)
 
-    if not os.path.exists(infer_dest):
-        os.makedirs(infer_dest)
 
-    model = load_model(model_path, num_classes=num_classes, device=device)
+# ==========================
+# INFERENCE 1 ẢNH
+# ==========================
 
-    class_names = {1: "class_1", 2: "class_2"}  # chỉnh theo COCO categories của bạn
+def inference_single(model, img_path, conf=0.5):
+    img = cv2.imread(img_path)
+    if img is None:
+        raise ValueError(f"Cannot open image: {img_path}")
 
-    print(f"Running inference on: {infer_source}")
-    print(f"Saving results to:     {infer_dest}")
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-    for img_file in os.listdir(infer_source):
-        if not img_file.lower().endswith((".jpg", ".png", ".jpeg")):
+    device = next(model.parameters()).device
+
+    x = preprocess(rgb).unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        pred = model(x)[0]
+
+    boxes = pred["boxes"].cpu().numpy()
+    scores = pred["scores"].cpu().numpy()
+    labels = pred["labels"].cpu().numpy()
+
+    # vẽ bbox
+    for box, score, label in zip(boxes, scores, labels):
+        if score < conf:
             continue
 
-        img_path = os.path.join(infer_source, img_file)
-        img = cv2.imread(img_path)
-        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        x1, y1, x2, y2 = map(int, box)
 
-        # convert to tensor
-        t_img = torch.tensor(rgb / 255.0, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0).to(device)
+        cls_name = CLASS_NAMES.get(label, f"cls_{label}")
 
-        with torch.no_grad():
-            preds = model(t_img)[0]
+        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(
+            img,
+            f"{cls_name} {score:.2f}",
+            (x1, y1 - 5),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 0),
+            2,
+        )
 
-        boxes = preds["boxes"].cpu().numpy()
-        scores = preds["scores"].cpu().numpy()
-        labels = preds["labels"].cpu().numpy()
+    return img
 
-        # draw results
-        for box, score, label in zip(boxes, scores, labels):
-            if score < 0.4:
-                continue
 
-            x1, y1, x2, y2 = box.astype(int)
-            name = class_names.get(int(label), f"id_{label}")
+# ==========================
+# INFERENCE FOLDER
+# ==========================
 
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(
-                img,
-                f"{name} {score:.2f}",
-                (x1, y1 - 5),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 255, 0),
-                2,
-            )
+def inference_folder(model_path, src_folder, out_folder, conf=0.5):
+    os.makedirs(out_folder, exist_ok=True)
 
-        out_path = os.path.join(infer_dest, img_file)
-        cv2.imwrite(out_path, img)
+    model = load_model(model_path)
 
-    print("Inference completed.")
+    files = [
+        f for f in os.listdir(src_folder)
+        if f.lower().endswith((".jpg", ".jpeg", ".png"))
+    ]
+
+    print(f"Running inference on {len(files)} images...")
+
+    for f in files:
+        inp = os.path.join(src_folder, f)
+        out = os.path.join(out_folder, f)
+
+        result = inference_single(model, inp, conf)
+        cv2.imwrite(out, result)
+
+    print("Inference completed!")
+
+
+# ==========================
+# API ĐỂ GỌI TỪ damage_detection.py
+# ==========================
+
+def inference_model(infer_source, infer_dest, model_path, num_classes=NUM_CLASSES):
+    if os.path.isfile(infer_source):
+        # inference 1 ảnh
+        os.makedirs(infer_dest, exist_ok=True)
+        model = load_model(model_path, num_classes)
+        result = inference_single(model, infer_source)
+        out = os.path.join(infer_dest, os.path.basename(infer_source))
+        cv2.imwrite(out, result)
+        print("Saved:", out)
+
+    else:
+        # inference folder
+        inference_folder(model_path, infer_source, infer_dest)

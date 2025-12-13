@@ -41,8 +41,8 @@ class DamageDataset(torch.utils.data.Dataset):
 
 class DamageDetectionTrainer:
     def __init__(self, train_json, train_images, val_json, val_images,
-                 n_epochs=10, model_path="trained_models/frcnn_damage.pt",
-                 num_classes=3):
+                 n_epochs=1, model_path="trained_models/frcnn_damage.pt",
+                 num_classes=9):
 
         self.train_json = train_json
         self.train_images = train_images
