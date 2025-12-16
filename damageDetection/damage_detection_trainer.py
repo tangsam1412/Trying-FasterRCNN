@@ -5,7 +5,7 @@ from torch.optim import SGD
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-from model.dataset import CoCoDataSet, preprocess_image
+from model.dataset import DamageDataset
 import numpy as np
 
 
@@ -58,30 +58,41 @@ class DamageDetectionTrainer:
         self._load_data()
 
     def _load_data(self):
-        print("Loading COCO train...")
-        coco_train = CoCoDataSet(self.train_images, annotations=self.train_json)
-        self.train_ds = DamageDataset(self.train_images, coco_train)
-        print(f"Train size: {len(self.train_ds)}")
+        print("Loading COCO datasets...")
+
+        # ===== TRAIN DATASET =====
+        self.train_dataset = CoCoDataSet(
+            image_dir="dataset/train/images",
+            annotation_file="dataset/train/train.json",
+            max_images=1000    # tăng dần sau
+        )
 
         self.train_loader = DataLoader(
-            self.train_ds,
-            batch_size=4,
-            collate_fn=self.train_ds.collate_fn,
+            self.train_dataset,
+            batch_size=2,      # GPU Colab an toàn
             shuffle=True,
-            drop_last=True
+            num_workers=0,     # 🔥 BẮT BUỘC
+            collate_fn=collate_fn
         )
 
-        print("Loading COCO val...")
-        coco_val = CoCoDataSet(self.val_images, annotations=self.val_json)
-        self.val_ds = DamageDataset(self.val_images, coco_val)
-        print(f"Val size: {len(self.val_ds)}")
+        # ===== VAL DATASET =====
+        self.val_dataset = CoCoDataSet(
+            image_dir="dataset/val/images",
+            annotation_file="dataset/val/val.json",
+            max_images=200
+        )
 
         self.val_loader = DataLoader(
-            self.val_ds,
-            batch_size=4,
-            collate_fn=self.val_ds.collate_fn,
-            drop_last=True
+            self.val_dataset,
+            batch_size=2,
+            shuffle=False,
+            num_workers=0,
+            collate_fn=collate_fn
         )
+
+        print(f"Train images: {len(self.train_dataset)}")
+        print(f"Val images:   {len(self.val_dataset)}")
+
 
     def _get_model(self):
         print("Loading FasterRCNN...")
