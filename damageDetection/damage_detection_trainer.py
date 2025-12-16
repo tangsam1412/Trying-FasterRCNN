@@ -5,7 +5,7 @@ from torch.optim import SGD
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-from model.dataset import DamageDataset
+from model.dataset import CoCoDataSet, collate_fn
 import numpy as np
 
 
@@ -62,18 +62,22 @@ class DamageDetectionTrainer:
 
         # ===== TRAIN DATASET =====
         self.train_dataset = CoCoDataSet(
-            image_dir="dataset/train/images",
-            annotation_file="dataset/train/train.json",
-            max_images=1000    # tăng dần sau
+            image_dir=train_image_dir,
+            annotation_file=train_annotation_file,
+            max_images=max_images,
+            target_size=256   # đổi 256 nếu GPU yếu
         )
+
 
         self.train_loader = DataLoader(
             self.train_dataset,
-            batch_size=2,      # GPU Colab an toàn
+            batch_size=batch_size,
             shuffle=True,
-            num_workers=0,     # 🔥 BẮT BUỘC
+            num_workers=2,
+            pin_memory=True,
             collate_fn=collate_fn
         )
+
 
         # ===== VAL DATASET =====
         self.val_dataset = CoCoDataSet(

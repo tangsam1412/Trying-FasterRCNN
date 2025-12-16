@@ -8,14 +8,15 @@ from tqdm import tqdm
 
 
 class CoCoDataSet(Dataset):
-    def __init__(self, image_dir, annotation_file, max_images=None):
+    def __init__(self, image_dir, annotation_file, max_images=None, target_size=512):
         """
         image_dir: folder chứa images
         annotation_file: file COCO json
         max_images: giới hạn số ảnh (None = load hết)
+        target_size: resize ảnh về (target_size x target_size)
         """
-
         self.image_dir = image_dir
+        self.target_size = target_size
 
         print("Loading COCO annotations...")
         with open(annotation_file, "r") as f:
@@ -31,12 +32,9 @@ class CoCoDataSet(Dataset):
         # image_id -> list annotation
         self.annotations = {}
         for ann in tqdm(coco["annotations"], desc="Parsing annotations"):
-            if ann["image_id"] not in self.annotations:
-                self.annotations[ann["image_id"]] = []
-            self.annotations[ann["image_id"]].append(ann)
+            self.annotations.setdefault(ann["image_id"], []).append(ann)
 
         self.image_ids = list(self.images.keys())
-
         if max_images is not None:
             self.image_ids = self.image_ids[:max_images]
 
@@ -55,22 +53,36 @@ class CoCoDataSet(Dataset):
             raise FileNotFoundError(f"Image not found: {img_path}")
 
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = img.astype(np.float32) / 255.0
-        img = torch.tensor(img).permute(2, 0, 1)
+        h, w = img.shape[:2]
 
+        # ===== RESIZE IMAGE =====
+        scale_x = self.target_size / w
+        scale_y = self.target_size / h
+        img = cv2.resize(img, (self.target_size, self.target_size))
+
+        # ===== PROCESS BBOX =====
         boxes = []
         labels = []
 
         for ann in self.annotations.get(img_id, []):
-            x, y, w, h = ann["bbox"]
-            if w <= 0 or h <= 0:
+            x, y, bw, bh = ann["bbox"]
+            if bw <= 0 or bh <= 0:
                 continue
 
-            boxes.append([x, y, x + w, y + h])
+            x1 = x * scale_x
+            y1 = y * scale_y
+            x2 = (x + bw) * scale_x
+            y2 = (y + bh) * scale_y
+
+            boxes.append([x1, y1, x2, y2])
             labels.append(self.cat_id_map[ann["category_id"]])
 
         boxes = torch.tensor(boxes, dtype=torch.float32)
         labels = torch.tensor(labels, dtype=torch.int64)
+
+        # ===== IMAGE TO TENSOR =====
+        img = img.astype(np.float32) / 255.0
+        img = torch.from_numpy(img).permute(2, 0, 1)
 
         target = {
             "boxes": boxes,
